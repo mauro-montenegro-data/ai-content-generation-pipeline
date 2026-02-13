@@ -271,6 +271,28 @@ This project demonstrates a **production-ready content generation pipeline** tha
 - **12% QA failure rate** → Room for prompt optimization
 
 ---
+🔐 Security & Cost Considerations
+
+### Security Best Practices
+- **API Keys**: Stored securely in n8n credentials (encrypted), never hardcoded in workflows
+- **Data Privacy**: Google Sheets may contain PII - ensure proper access controls
+- **Credential Rotation**: Regularly rotate API keys and service account credentials
+- **Access Control**: Limit Google Sheets sharing to authorized users only
+
+### Cost Optimization
+- **Pre-validation**: Input validation prevents ~27% of unnecessary API calls
+- **Efficient Prompting**: Structured prompts reduce token usage per request
+- **Batch Processing**: Sequential processing avoids rate limit penalties
+- **Quality Gates**: QA system prevents regeneration of poor content
+
+### Estimated Costs (based on test run)
+- **Per Brief**: ~$0.005 - $0.01 (GPT-4)
+- **100 Briefs/day**: ~$0.50 - $1.00
+- **Validation Savings**: ~$0.15/day (prevented API calls)
+
+**Note:** Actual costs vary based on GPT-4 pricing tier and content length.
+
+---
 
 ## 🚀 Setup & Installation
 
