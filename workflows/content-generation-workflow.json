@@ -1,0 +1,1477 @@
+{
+  "name": "content-generation-workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        -16
+      ],
+      "id": "c8b1b6e5-dd29-4c7c-b968-8d9875c31306",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "input",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "n8n_processed_at"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -416,
+        -16
+      ],
+      "id": "d6b4d90f-8ff8-41f5-9169-b5388df77bb9",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 11,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        416,
+        -80
+      ],
+      "id": "64eb4b4d-2f86-4067-a8fa-656c053d5a53",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 0) Parse meta (string JSON) -> object\nlet meta = {};\ntry {\n  meta = JSON.parse(String($json.meta || \"\").trim() || \"{}\");\n} catch (e) {\n  meta = {};\n}\n\n// 1) Extract model text from OpenAI node output\nconst raw = $json?.output?.[0]?.content?.[0]?.text ?? \"\";\nconst text = String(raw).trim();\n\n// 2) Parse JSON output from model\nlet parsed = null;\nlet qa_ok = true;\nlet qa_status = \"qa_ok\";\nlet qa_message = \"ok\";\n\nfunction fail(status, msg) {\n  qa_ok = false;\n  qa_status = status;\n  qa_message = msg;\n}\n\ntry {\n  parsed = JSON.parse(text);\n} catch (e) {\n  fail(\"qa_fail_format\", \"Model output is not valid JSON\");\n}\n\n// 3) Validate schema exactly\nif (qa_ok && parsed) {\n  const expected = [\"id\", \"language\", \"length\", \"title\", \"body\"];\n  const keys = Object.keys(parsed);\n  const hasAll = expected.every(k => keys.includes(k));\n  const noExtra = keys.every(k => expected.includes(k));\n  if (!hasAll || !noExtra) {\n    fail(\"qa_fail_schema\", \"Keys must be exactly: id, language, length, title, body\");\n  }\n}\n\n// 4) Validate against meta (parsed object)\nif (qa_ok && parsed) {\n  // Normalizar valores para comparación (convertir a mayúsculas para case-insensitive)\n  const parsedId = String(parsed.id || \"\").trim();\n  const metaId = String(meta.id || \"\").trim();\n  \n  const parsedLang = String(parsed.language || \"\").trim().toUpperCase();\n  const metaLang = String(meta.language || \"\").trim().toUpperCase();\n  \n  const parsedLen = String(parsed.length || \"\").trim().toLowerCase();\n  const metaLen = String(meta.length || \"\").trim().toLowerCase();\n  \n  if (parsedId !== metaId) {\n    fail(\"qa_fail_mismatch\", `id mismatch (got \"${parsedId}\", expected \"${metaId}\")`);\n  }\n  if (parsedLang !== metaLang) {\n    fail(\"qa_fail_mismatch\", `language mismatch (got \"${parsedLang}\", expected \"${metaLang}\")`);\n  }\n  if (parsedLen !== metaLen) {\n    fail(\"qa_fail_mismatch\", `length mismatch (got \"${parsedLen}\", expected \"${metaLen}\")`);\n  }\n}\n\n// 5) Title rules\nif (qa_ok && parsed) {\n  const title = String(parsed.title || \"\").trim();\n  const titleWords = title.split(/\\s+/).filter(Boolean).length;\n  if (titleWords < 5 || titleWords > 12) {\n    fail(\"qa_fail_title\", `title must be 5-12 words (got ${titleWords})`);\n  }\n}\n\n// 6) Body rules\nif (qa_ok && parsed) {\n  const body = String(parsed.body || \"\").trim();\n  const words = body.split(/\\s+/).filter(Boolean).length;\n  const isShort = String(meta.length || \"\").trim().toLowerCase() === \"short\";\n  const min = isShort ? 90 : 180;\n  const max = isShort ? 140 : 260;\n  if (words < min || words > max) {\n    fail(\"qa_fail_length\", `body words out of range (${min}-${max}), got ${words}`);\n  }\n  if (!body.includes(\"\\n\\n\")) {\n    fail(\"qa_fail_paragraphs\", \"body must have paragraphs separated by a blank line\");\n  }\n}\n\n// Asegurar que parsed siempre sea un objeto\nif (!parsed) {\n  parsed = { title: \"\", body: \"\" };\n}\n\n// 7) Return item for next nodes\nreturn {\n  json: {\n    id: meta.id ?? \"\",\n    topic: meta.topic ?? \"\",\n    audience: meta.audience ?? \"\",\n    language: meta.language ?? \"\",\n    length: meta.length ?? \"\",\n    title: parsed.title ?? \"\",\n    body: parsed.body ?? \"\",\n    qa_ok,\n    qa_status,\n    qa_message,\n    generated_at: new Date().toISOString(),\n    raw_response: text,\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        -224
+      ],
+      "id": "375668a8-a373-45da-85c8-2388d85a311a",
+      "name": "QA node"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtrar SOLO los no procesados\nitems = items.filter(item => {\n  const v = (item.json.n8n_processed_at ?? '').toString().trim();\n  return v === '';\n});\n\nconst allowedLanguages = new Set(['EN', 'ES']);\nconst allowedLengths = new Set(['short', 'medium']);\n\nfunction norm(v) {\n  return (v ?? '').toString().trim();\n}\n\nfunction pickRowNumber(row) {\n  return (\n    row.row_number ??\n    row.rowNumber ??\n    row._rowNumber ??\n    row.row ??\n    row.__rowNum ??\n    null\n  );\n}\n\nconst processedAt = new Date().toISOString();\n\nreturn items.map((item) => {\n  const row = item.json;\n  \n  const id = norm(row.id);\n  const topic = norm(row.topic);\n  const audience = norm(row.audience);\n  const language = norm(row.language).toUpperCase();\n  const length = norm(row.length).toLowerCase();\n  \n  const errors = [];\n  if (!id) errors.push({ field: 'id', message: 'missing id' });\n  if (!topic) errors.push({ field: 'topic', message: 'missing topic' });\n  if (!audience) errors.push({ field: 'audience', message: 'missing audience' });\n  if (!language) errors.push({ field: 'language', message: 'missing language' });\n  else if (!allowedLanguages.has(language)) {\n    errors.push({ field: 'language', message: `invalid language: ${language}` });\n  }\n  if (!length) errors.push({ field: 'length', message: 'missing length' });\n  else if (!allowedLengths.has(length)) {\n    errors.push({ field: 'length', message: `invalid length: ${length}` });\n  }\n  \n  const is_valid = errors.length === 0;\n  const hasError = !is_valid;\n  const error_fields = errors.map(e => e.field);\n  const error_messages = errors.map(e => e.message);\n  \n  item.json = {\n    ...row,\n    id,\n    topic,\n    audience,\n    language,\n    length,\n    // NO marcar n8n_processed_at aquí\n    is_valid,\n    hasError,\n    step: 'validation',\n    status: is_valid ? 'ok' : 'error',\n    error_field: hasError ? error_fields.join('|') : '',\n    message: hasError ? error_messages.join(' | ') : '',\n    timestamp: processedAt,\n    row_number: pickRowNumber(row),\n  };\n  \n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        -16
+      ],
+      "id": "ae995796-c8b1-4b15-b948-a9e358731b79",
+      "name": "Validation node"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "chatgpt-4o-latest",
+          "mode": "list",
+          "cachedResultName": "CHATGPT-4O-LATEST"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "IMPORTANT: You MUST copy id, language, and length exactly from the inputs. Do not change them.\n\nYou are producing marketing content for fintech app growth campaigns.\nFollow instructions exactly. Output must be valid JSON only.\nDo not include markdown, code fences, or any extra text.\n\nRules:\n- Use the provided inputs only.\n- No hype, no exaggerated claims, no promises of guaranteed results.\n- Keep language exactly as requested (EN or ES).\n- Title: clear, specific, not clickbait.\n- Body: plain text, 2 to 4 short paragraphs.\n- No emojis.\n- No placeholders.\n- Output must match the schema exactly and include no additional keys.\n"
+            },
+            {
+              "content": "=={{\n`You are a UGC content generator. Follow these rules EXACTLY.\n\nINPUT DATA:\nid: ${$json.id}\ntopic: ${$json.topic}\naudience: ${$json.audience}\nlanguage: ${$json.language}\nlength: ${$json.length}\n\nCRITICAL VALIDATION RULES (your output will be automatically validated):\n\n1. EXACT COPY: id, language, and length must match the input EXACTLY\n   - id: \"${$json.id}\"\n   - language: \"${$json.language}\"\n   - length: \"${$json.length}\"\n\n2. WORD COUNT (STRICT - will be counted automatically):\n   ${$json.length === 'short' \n     ? '- Body must be between 90-140 words (count carefully!)'\n     : '- Body must be between 180-260 words (count carefully!)'}\n   \n3. TITLE: Must be exactly 5-12 words (will be counted)\n\n4. BODY FORMAT: \n   - Must have 2-4 paragraphs\n   - Paragraphs separated by a blank line (\\\\n\\\\n)\n   - Natural, authentic UGC style\n   - No jargon, real user experience\n\nBEFORE YOU RESPOND:\n- Count the words in your body\n- Verify it's within the range\n- Check title is 5-12 words\n- Ensure paragraphs are separated by \\\\n\\\\n\n\nOUTPUT FORMAT (JSON only, no markdown):\n{\n  \"id\": \"${$json.id}\",\n  \"language\": \"${$json.language}\",\n  \"length\": \"${$json.length}\",\n  \"title\": \"<your 5-12 word title>\",\n  \"body\": \"<your ${$json.length === 'short' ? '90-140' : '180-260'} word body with paragraphs separated by \\\\n\\\\n>\"\n}`\n}}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        1152,
+        -288
+      ],
+      "id": "4c82f386-55ce-4330-98d8-10e82ed607c1",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "Jp5qrquX1orghnTN",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1006025260,
+          "mode": "list",
+          "cachedResultName": "logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=1006025260"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{$json.timestamp}}",
+            "id": "={{$json.id}}",
+            "event_type": "validation_error",
+            "step": "validation",
+            "status": "error",
+            "message": "={{$json.message}}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "event_type",
+              "displayName": "event_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -208,
+        304
+      ],
+      "id": "7b702f1a-42c5-4756-b0ee-958b86047814",
+      "name": "Append to logs (validation error)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "input",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{($json.id) }}",
+            "n8n_validation_status": "={{($json.status) }}",
+            "n8n_processed_at": "={{($json.timestamp) }}",
+            "n8n_validation_notes": "={{($json.message) }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "audience",
+              "displayName": "audience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "length",
+              "displayName": "length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_status",
+              "displayName": "validation_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_notes",
+              "displayName": "validation_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_validation_status",
+              "displayName": "n8n_validation_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "n8n_validation_notes",
+              "displayName": "n8n_validation_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "qa_status",
+              "displayName": "qa_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "qa_message",
+              "displayName": "qa_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "content_generated_at",
+              "displayName": "content_generated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_processed_at",
+              "displayName": "n8n_processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processing_attempts",
+              "displayName": "processing_attempts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        96,
+        304
+      ],
+      "id": "b123c2e6-bab2-496a-aa36-c76e31a10bc5",
+      "name": "Update input (validation error)",
+      "alwaysOutputData": false,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "a76afb79-ab06-43d6-a03e-f0317a2e3c2e",
+              "leftValue": "={{ $json.is_valid && !$json.hasError }}",
+              "rightValue": "=",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -32,
+        -16
+      ],
+      "id": "c1cdc01f-11a9-44cc-8925-068de29947b2",
+      "name": "If (validation check)"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const { id, topic, audience, language, length } = $json;\n\nreturn {\n  json: { \n    id,\n    topic,\n    audience,\n    language,\n    length,\n    meta: JSON.stringify({ id, topic, audience, language, length })\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        -160
+      ],
+      "id": "ef2c823e-d722-49dc-b518-b4a59e75a098",
+      "name": "Add meta field"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Obtener la respuesta del modelo\nconst modelOutput = $json.output;\n\n// Obtener los datos del nodo anterior (Code in JavaScript)\nconst previousData = $(\"Add meta field\").item.json;\n\n// Combinar todo\nreturn {\n  json: {\n    ...previousData,  // incluye id, topic, audience, language, length, meta\n    output: modelOutput  // incluye la respuesta del modelo\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1504,
+        -288
+      ],
+      "id": "1023ad14-daa2-4a61-88ea-753bc5b04c00",
+      "name": "Combine model output"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9e2525e3-cba5-41d0-ac71-6657803fc628",
+              "leftValue": "={{$json.qa_ok}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1936,
+        -224
+      ],
+      "id": "099f9333-6843-40cf-a89b-6af037c92f19",
+      "name": "If (QA check)"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "input",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('QA node').item.json.id }}",
+            "qa_status": "={{ $('QA node').item.json.qa_status }}",
+            "qa_message": "={{ $('QA node').item.json.qa_message }}",
+            "content_generaed_at": "={{ $('QA node').item.json.generated_at }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "audience",
+              "displayName": "audience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "length",
+              "displayName": "length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_status",
+              "displayName": "validation_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_notes",
+              "displayName": "validation_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_processed_at",
+              "displayName": "n8n_processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "qa_status",
+              "displayName": "qa_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "qa_message",
+              "displayName": "qa_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "content_generaed_at",
+              "displayName": "content_generaed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2384,
+        -208
+      ],
+      "id": "fa375c24-3ce8-4506-80ae-a66fa34c0fb9",
+      "name": "Update input (QA fail)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 726774758,
+          "mode": "list",
+          "cachedResultName": "output",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=726774758"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "id": "={{ $json.id }}",
+            "language": "=={{ $json.language }}",
+            "length": "=={{ $json.length }}",
+            "topic": "=={{ $json.topic }}",
+            "audience": "=={{ $json.audience }}",
+            "title": "=={{ $json.title }}",
+            "body": "=={{ $json.body }}",
+            "qa_status": "=={{ $json.qa_status }}",
+            "generated_at": "=={{ $json.generated_at }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "length",
+              "displayName": "length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "audience",
+              "displayName": "audience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "body",
+              "displayName": "body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "qa_status",
+              "displayName": "qa_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "generated_at",
+              "displayName": "generated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "qa_ok",
+              "displayName": "qa_ok",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "qa_message",
+              "displayName": "qa_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "raw_response",
+              "displayName": "raw_response",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2144,
+        -448
+      ],
+      "id": "a0cbefb7-9e5e-4783-aad7-22ab134c090f",
+      "name": "Append to output",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1006025260,
+          "mode": "list",
+          "cachedResultName": "logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=1006025260"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "timestamp": "={{ $json.generated_at }}",
+            "event_type": "qa_fail",
+            "step": "qa",
+            "status": "={{ $json.qa_status }}",
+            "message": "={{ $json.qa_message }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "event_type",
+              "displayName": "event_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2160,
+        -208
+      ],
+      "id": "702573ab-b779-4586-a2ba-97d92ad6ec7c",
+      "name": "Append to logs (QA fail)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1006025260,
+          "mode": "list",
+          "cachedResultName": "logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=1006025260"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "timestamp": "={{ $json.generated_at }}",
+            "event_type": "qa_pass",
+            "step": "qa",
+            "status": "qa_ok",
+            "message": "Content generated successfully"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "event_type",
+              "displayName": "event_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2368,
+        -448
+      ],
+      "id": "a576606c-a398-4323-985f-9f8e5c648290",
+      "name": "Append to logs (QA pass)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0",
+          "mode": "list",
+          "cachedResultName": "content_input_v1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "input",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FajFUJ-zV93V8aCMZVcc0okQ2cePccXIOO7dT2dfso0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('QA node').item.json.id }}",
+            "qa_status": "={{ $('QA node').item.json.qa_status }}",
+            "qa_message": "={{ $('QA node').item.json.qa_message }}",
+            "n8n_processed_at": "={{ $('QA node').item.json.generated_at }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "audience",
+              "displayName": "audience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "length",
+              "displayName": "length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_status",
+              "displayName": "validation_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "validation_notes",
+              "displayName": "validation_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_validation_status",
+              "displayName": "n8n_validation_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_validation_notes",
+              "displayName": "n8n_validation_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "qa_status",
+              "displayName": "qa_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "qa_message",
+              "displayName": "qa_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "content_generated_at",
+              "displayName": "content_generated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "n8n_processed_at",
+              "displayName": "n8n_processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "processing_attempts",
+              "displayName": "processing_attempts",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2576,
+        -448
+      ],
+      "id": "66f8b011-0fa9-4c9d-8eb3-f838b749dade",
+      "name": "Update input (QA pass)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "E3kEVoSvwv51orgr",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Validation node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Add meta field",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QA node": {
+      "main": [
+        [
+          {
+            "node": "If (QA check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation node": {
+      "main": [
+        [
+          {
+            "node": "If (validation check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Combine model output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to logs (validation error)": {
+      "main": [
+        [
+          {
+            "node": "Update input (validation error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If (validation check)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append to logs (validation error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add meta field": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine model output": {
+      "main": [
+        [
+          {
+            "node": "QA node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If (QA check)": {
+      "main": [
+        [
+          {
+            "node": "Append to output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append to logs (QA fail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to logs (QA fail)": {
+      "main": [
+        [
+          {
+            "node": "Update input (QA fail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to output": {
+      "main": [
+        [
+          {
+            "node": "Append to logs (QA pass)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to logs (QA pass)": {
+      "main": [
+        [
+          {
+            "node": "Update input (QA pass)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "e29e47cc-9409-4f39-9a94-daea515c376e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "12660f99e44e79b8171b28121d275057ec2a7a2e3b01956afc989fbb06036770"
+  },
+  "id": "kUiXsCOVhtQqf71e",
+  "tags": []
+}
